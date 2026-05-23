@@ -276,11 +276,37 @@ const httpServer = http.createServer(async (req, res) => {
       return res.end("Unauthorized - use proxy credentials\n");
     }
 
-    // GET /logs — list available log files
-    if (req.url === "/logs") {
+    // GET /logs or /logs?tail=20 — list files or tail latest entries
+    if (req.url === "/logs" || req.url.startsWith("/logs?")) {
+      const params = new URL(req.url, "http://localhost").searchParams;
+      const tail = parseInt(params.get("tail"), 10);
+
       let files;
-      try { files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl")); }
+      try { files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl")).sort(); }
       catch { files = []; }
+
+      // If ?tail=N, show last N entries from the most recent file
+      if (tail > 0 && files.length > 0) {
+        const latest = files[files.length - 1];
+        const fullPath = path.join(LOG_DIR, latest);
+        let content;
+        try { content = fs.readFileSync(fullPath, "utf-8"); }
+        catch {
+          res.writeHead(500);
+          return res.end("Error reading log file\n");
+        }
+        const entries = content
+          .split("\n")
+          .filter(Boolean)
+          .slice(-tail)
+          .map(line => { try { return JSON.parse(line); } catch { return null; } })
+          .filter(Boolean);
+
+        const lines = entries.map(e =>
+          `[${e.id}] ${e.timestamp}  ${e.method} ${e.url}  → ${e.status}  (${e.duration}ms)`);
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        return res.end(lines.join("\n") + "\n\n(Last " + entries.length + " from " + latest + ")\n");
+      }
 
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(
@@ -289,18 +315,30 @@ const httpServer = http.createServer(async (req, res) => {
         (files.length
           ? files.map((f, i) => `${i + 1}. ${f}   —   /logs/${f}`).join("\n")
           : "(no log files yet)") +
-        "\n\nUse /logs/<filename> to view a file\n"
+        "\n\nUsage:\n" +
+        "  /logs               — list files\n" +
+        "  /logs?tail=20       — last 20 entries (newest file)\n" +
+        "  /logs/<file>        — all entries (raw)\n" +
+        "  /logs/<file>?tail=5 — last 5 entries\n" +
+        "  /logs/<file>?status=403\n" +
+        "  /logs/<file>?method=GET&url=example\n" +
+        "  /logs/<file>?type=tunnel\n"
       );
       return;
     }
 
-    // GET /logs/<filename> — show file contents
-    const filename = decodeURIComponent(req.url.slice("/logs/".length));
+    // GET /logs/<filename>[?tail=N][&status=N][&method=X][&url=X][&type=X]
+    const urlPath = req.url.slice("/logs/".length);
+    const qIdx = urlPath.indexOf("?");
+    const filename = decodeURIComponent(qIdx === -1 ? urlPath : urlPath.slice(0, qIdx));
+    const params = new URL(req.url, "http://localhost").searchParams;
+
     // Basic path traversal guard
     if (filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
       res.writeHead(403);
       return res.end("Forbidden\n");
     }
+
     const fullPath = path.join(LOG_DIR, filename);
     let content;
     try { content = fs.readFileSync(fullPath, "utf-8"); }
@@ -309,8 +347,44 @@ const httpServer = http.createServer(async (req, res) => {
       return res.end("Not found\n");
     }
 
+    // Parse JSONL entries
+    let entries = content
+      .split("\n")
+      .filter(Boolean)
+      .map(line => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean);
+
+    // Apply filters
+    const tail = parseInt(params.get("tail"), 10);
+    if (params.has("status")) {
+      const code = parseInt(params.get("status"), 10);
+      entries = entries.filter(e => e.status === code);
+    }
+    if (params.has("method")) {
+      const m = params.get("method").toUpperCase();
+      entries = entries.filter(e => e.method === m);
+    }
+    if (params.has("url")) {
+      const u = params.get("url").toLowerCase();
+      entries = entries.filter(e => e.url.toLowerCase().includes(u));
+    }
+    if (params.has("type")) {
+      entries = entries.filter(e => e.type === params.get("type"));
+    }
+    if (tail > 0) {
+      entries = entries.slice(-tail);
+    }
+
+    // Format output
+    const lines = entries.map(e =>
+      `[${e.id}] ${e.timestamp}  ${e.method} ${e.url}  → ${e.status}  (${e.duration}ms)`);
+    const summary = `${entries.length} entry(ies)`;
+    const output = lines.length > 0
+      ? lines.join("\n") + "\n\n" + summary + "\n"
+      : "(no matching entries)\n";
+
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-    return res.end(content);
+    return res.end(output);
   }
 
   // ── Route: DELETE /logs — delete all log files ──────────────────────────────
