@@ -313,6 +313,29 @@ const httpServer = http.createServer(async (req, res) => {
     return res.end(content);
   }
 
+  // ── Route: DELETE /logs — delete all log files ──────────────────────────────
+  if (req.method === "DELETE" && req.url === "/logs") {
+    if (!checkAuth(req)) {
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      return res.end("Unauthorized\n");
+    }
+
+    let files;
+    try { files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl")); }
+    catch { files = []; }
+
+    let deleted = 0;
+    for (const f of files) {
+      try {
+        fs.unlinkSync(path.join(LOG_DIR, f));
+        deleted++;
+      } catch {}
+    }
+
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    return res.end(`Deleted ${deleted} log file(s)\n`);
+  }
+
   // ── Route: HTTP proxy (requires auth) ───────────────────────────────────
   return handleProxy(req, res);
 });
