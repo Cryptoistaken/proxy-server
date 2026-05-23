@@ -39,7 +39,8 @@ const PROXY_PUBLIC_PORT = RAILWAY_TCP_PROXY_PORT   || HTTP_PORT;
 const BOT_WEBHOOK_PATH = BOT_TOKEN ? `/bot${BOT_TOKEN}` : "";
 
 let reqCount = 0;
-let botInstance = null; // kept for graceful shutdown
+let botInstance = null;   // kept for graceful shutdown
+let botPolling = false;   // true only if bot.launch() was used (polling mode)
 
 // ─── Persistent log volume ─────────────────────────────────────────────────────
 // Railway injects RAILWAY_VOLUME_MOUNT_PATH when a volume is attached.
@@ -258,6 +259,53 @@ const httpServer = http.createServer(async (req, res) => {
       return httpServer.webhookHandler(req, res);
     }
     // Bot not ready — let it fall through to proxy handler which will reject
+  }
+
+  // ── Route: Log viewer (requires proxy auth) ─────────────────────────────
+  if (req.method === "GET" && (req.url === "/logs" || req.url.startsWith("/logs/"))) {
+    if (!checkAuth(req)) {
+      res.writeHead(401, {
+        "Content-Type": "text/plain",
+        "Proxy-Authenticate": 'Basic realm="proxy"',
+      });
+      return res.end("Unauthorized - use proxy credentials\n");
+    }
+
+    // GET /logs — list available log files
+    if (req.url === "/logs") {
+      let files;
+      try { files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith(".jsonl")); }
+      catch { files = []; }
+
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(
+        "Log Files (" + LOG_DIR + ")\n" +
+        "─".repeat(40) + "\n" +
+        (files.length
+          ? files.map((f, i) => `${i + 1}. ${f}   —   /logs/${f}`).join("\n")
+          : "(no log files yet)") +
+        "\n\nUse /logs/<filename> to view a file\n"
+      );
+      return;
+    }
+
+    // GET /logs/<filename> — show file contents
+    const filename = decodeURIComponent(req.url.slice("/logs/".length));
+    // Basic path traversal guard
+    if (filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
+      res.writeHead(403);
+      return res.end("Forbidden\n");
+    }
+    const fullPath = path.join(LOG_DIR, filename);
+    let content;
+    try { content = fs.readFileSync(fullPath, "utf-8"); }
+    catch {
+      res.writeHead(404);
+      return res.end("Not found\n");
+    }
+
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    return res.end(content);
   }
 
   // ── Route: HTTP proxy (requires auth) ───────────────────────────────────
@@ -520,6 +568,7 @@ async function startBot() {
   if (!RAILWAY_PUBLIC_DOMAIN) {
     // Polling mode — no webhook, no conflict
     log.warning("RAILWAY_PUBLIC_DOMAIN not set — using polling instead of webhook");
+    botPolling = true;
     await bot.launch();
     log.success("Telegram bot started (polling)");
     return;
@@ -558,12 +607,15 @@ log.info(`Persistent log volume: ${LOG_DIR}`);
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 process.once("SIGINT", async () => {
   log.info("Shutting down (SIGINT)…");
-  if (botInstance) await botInstance.stop("SIGINT");
+  // Only stop() if bot was started with bot.launch() (polling mode).
+  // In webhook mode, createWebhook() does not set internal running state,
+  // so stop() would throw "Bot is not running!".
+  if (botInstance && botPolling) await botInstance.stop("SIGINT");
   process.exit(0);
 });
 
 process.once("SIGTERM", async () => {
   log.info("Shutting down (SIGTERM)…");
-  if (botInstance) await botInstance.stop("SIGTERM");
+  if (botInstance && botPolling) await botInstance.stop("SIGTERM");
   process.exit(0);
 });
