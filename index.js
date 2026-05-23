@@ -90,8 +90,14 @@ function checkAuth(req) {
     "";
   if (!header.startsWith("Basic ")) return false;
   const decoded = Buffer.from(header.slice(6), "base64").toString();
-  const [u, p] = decoded.split(":");
-  return u === USER && p === PASS;
+  const idx = decoded.indexOf(":");
+  if (idx === -1) return false;
+  const password = decoded.slice(idx + 1);
+  // Accept any username as long as the password matches.
+  // This supports formats like:
+  //   ratul:ratul
+  //   1BV1907-zone-abc-region-CI:ratul
+  return password === PASS;
 }
 
 function sendAuthRequired(res) {
@@ -605,8 +611,11 @@ async function startBot() {
     ctx.editMessageText(
       `Credentials\n\n` +
       `User: ${USER}\nPass: ${PASS}\n\n` +
+      `─ Default ─\n` +
       `HTTP\n${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}\n\n` +
-      `SOCKS5\n${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${SOCKS_PORT}`,
+      `SOCKS5\n${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${SOCKS_PORT}\n\n` +
+      `─ Zone format ─\n` +
+      `http://${USER}-zone-abc-region-CI:${PASS}@${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}`,
       backButton());
   });
 
