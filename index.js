@@ -82,7 +82,12 @@ function divider(char = "─", len = 60) {
 
 // ─── Proxy auth ───────────────────────────────────────────────────────────────
 function checkAuth(req) {
-  const header = req.headers["proxy-authorization"] || "";
+  // Accept both Proxy-Authorization (used by proxy clients) and
+  // Authorization (used by direct HTTP clients e.g. browser to /logs)
+  const header =
+    req.headers["proxy-authorization"] ||
+    req.headers["authorization"] ||
+    "";
   if (!header.startsWith("Basic ")) return false;
   const decoded = Buffer.from(header.slice(6), "base64").toString();
   const [u, p] = decoded.split(":");
