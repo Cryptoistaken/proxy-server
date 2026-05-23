@@ -609,14 +609,14 @@ async function startBot() {
     if (!isAllowed(ctx)) return ctx.answerCbQuery("Unauthorized.");
     ctx.answerCbQuery();
     ctx.editMessageText(
-      `Credentials\n\n` +
-      `User: ${USER}\nPass: ${PASS}\n\n` +
-      `─ Default ─\n` +
-      `HTTP\n${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}\n\n` +
-      `SOCKS5\n${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${SOCKS_PORT}\n\n` +
-      `─ Zone format ─\n` +
-      `http://${USER}-zone-abc-region-CI:${PASS}@${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}`,
-      backButton());
+      "`Credentials`\n\n" +
+      `User: \`${USER}\`\nPass: \`${PASS}\`\n\n` +
+      "─ Default ─\n" +
+      `\`http://${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}\`\n` +
+      `\`socks5://${USER}:${PASS}@${PROXY_PUBLIC_HOST}:${SOCKS_PORT}\`\n\n` +
+      "─ Zone format ─\n" +
+      `\`http://${USER}-zone-abc-region-CI:${PASS}@${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}\``,
+      { parse_mode: "Markdown", ...backButton() });
   });
 
   bot.action("info", (ctx) => {
