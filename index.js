@@ -1,5 +1,7 @@
 import http from "http";
 import net from "net";
+import fs from "fs";
+import path from "path";
 import { URL } from "url";
 import chalk from "chalk";
 import { Telegraf } from "telegraf";
@@ -38,6 +40,26 @@ const BOT_WEBHOOK_PATH = BOT_TOKEN ? `/bot${BOT_TOKEN}` : "";
 
 let reqCount = 0;
 let botInstance = null; // kept for graceful shutdown
+
+// ─── Persistent log volume ─────────────────────────────────────────────────────
+// Railway injects RAILWAY_VOLUME_MOUNT_PATH when a volume is attached.
+// Log files persist across restarts so you can debug later.
+const LOG_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.resolve("./logs");
+
+function ensureLogDir() {
+  try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+}
+ensureLogDir();
+
+function logToFile(entry) {
+  const filename = `${entry.timestamp.slice(0, 10)}.jsonl`;
+  const filepath = path.join(LOG_DIR, filename);
+  try {
+    fs.appendFileSync(filepath, JSON.stringify(entry) + "\n");
+  } catch (err) {
+    log.debug(`Failed to write log file: ${err.message}`);
+  }
+}
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 const log = {
@@ -174,7 +196,20 @@ async function handleProxy(req, res) {
   }
 
   const reqBody = await collectBody(req);
+  const timestamp = ts();
   logRequest(id, req.method, req.url, req.headers, reqBody);
+
+  const entry = {
+    type: "http",
+    id,
+    timestamp,
+    method: req.method,
+    url: req.url,
+    client: req.socket.remoteAddress || "",
+    reqHeaders: { ...req.headers },
+    reqBody: reqBody.length > 0 ? reqBody.toString("utf8").slice(0, 50000) : null,
+  };
+  delete entry.reqHeaders["proxy-authorization"];
 
   const opts = {
     hostname: target.hostname,
@@ -189,12 +224,21 @@ async function handleProxy(req, res) {
   const proxyReq = http.request(opts, async (proxyRes) => {
     const resBody = await collectBody(proxyRes);
     logResponse(id, proxyRes.statusCode, proxyRes.headers, resBody);
+    entry.status = proxyRes.statusCode;
+    entry.resHeaders = proxyRes.headers;
+    entry.resBody = resBody.length > 0 ? resBody.toString("utf8").slice(0, 50000) : null;
+    entry.duration = Math.round((Date.now() - new Date(timestamp).getTime()));
+    logToFile(entry);
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     res.end(resBody);
   });
 
   proxyReq.on("error", (err) => {
     log.error(`HTTP #${id} failed: ${err.message}`);
+    entry.status = 502;
+    entry.error = err.message || err.code || "Unknown";
+    entry.duration = Math.round((Date.now() - new Date(timestamp).getTime()));
+    logToFile(entry);
     res.writeHead(502);
     res.end("Bad Gateway");
   });
@@ -232,16 +276,33 @@ httpServer.on("connect", (req, clientSocket, head) => {
   const id = ++reqCount;
   const [host, portStr] = req.url.split(":");
   const port = parseInt(portStr) || 443;
+  const tunnelTs = ts();
   logTunnel(id, host, port);
+
+  const tunnelEntry = {
+    type: "tunnel",
+    id,
+    timestamp: tunnelTs,
+    host,
+    port,
+    client: clientSocket.remoteAddress || "",
+  };
 
   const remote = net.connect(port, host, () => {
     clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     if (head && head.length) remote.write(head);
+    tunnelEntry.status = "connected";
+    tunnelEntry.duration = Math.round((Date.now() - new Date(tunnelTs).getTime()));
+    logToFile(tunnelEntry);
     pipe(clientSocket, remote);
   });
 
   remote.on("error", (err) => {
     log.error(`TUNNEL #${id} error: ${err.message}`);
+    tunnelEntry.status = "error";
+    tunnelEntry.error = err.message || err.code || "Unknown";
+    tunnelEntry.duration = Math.round((Date.now() - new Date(tunnelTs).getTime()));
+    logToFile(tunnelEntry);
     clientSocket.destroy();
   });
 });
@@ -301,7 +362,17 @@ const socksServer = net.createServer((client) => {
         }
 
         const id = ++reqCount;
+        const socksTs = ts();
         logSocks(id, host, port);
+
+        const socksEntry = {
+          type: "socks5",
+          id,
+          timestamp: socksTs,
+          host,
+          port,
+          atyp: ["?", "IPv4", "?", "Domain", "?", "IPv6"][atyp] || "?",
+        };
 
         const remote = net.connect(port, host, () => {
           const resp = Buffer.alloc(10);
@@ -314,12 +385,20 @@ const socksServer = net.createServer((client) => {
           const leftover = req.slice(headerLen);
           if (leftover.length > 0) remote.write(leftover);
 
+          socksEntry.status = "connected";
+          socksEntry.duration = Math.round((Date.now() - new Date(socksTs).getTime()));
+          logToFile(socksEntry);
+
           pipe(client, remote);
           log.debug(`SOCKS5 #${id} connected to ${host}:${port}`);
         });
 
         remote.on("error", (err) => {
           log.error(`SOCKS5 #${id} error: ${err.message}`);
+          socksEntry.status = "error";
+          socksEntry.error = err.message || err.code || "Unknown";
+          socksEntry.duration = Math.round((Date.now() - new Date(socksTs).getTime()));
+          logToFile(socksEntry);
           client.write(Buffer.from([SOCKS_VER, 0x04, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]));
           client.destroy();
         });
@@ -337,15 +416,15 @@ function isAllowed(ctx) {
 }
 
 function mainMenu() {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "Credentials",     callback_data: "creds" }],
-        [{ text: "Connection Info", callback_data: "info"  }],
-        [{ text: "Traffic Stats",   callback_data: "stats" }],
-      ],
-    },
-  };
+  const rows = [
+    [{ text: "Credentials",     callback_data: "creds" }],
+    [{ text: "Connection Info", callback_data: "info"  }],
+    [{ text: "Traffic Stats",   callback_data: "stats" }],
+  ];
+  if (LOG_DIR) {
+    rows.push([{ text: "Log Storage", callback_data: "logs" }]);
+  }
+  return { reply_markup: { inline_keyboard: rows } };
 }
 
 function backButton() {
@@ -402,6 +481,30 @@ async function startBot() {
       `Total requests: ${reqCount}\n` +
       `Uptime: ${Math.floor(process.uptime() / 60)} minutes`,
       backButton());
+  });
+
+  bot.action("logs", (ctx) => {
+    if (!isAllowed(ctx)) return ctx.answerCbQuery("Unauthorized.");
+    ctx.answerCbQuery();
+    let totalSize = 0, fileCount = 0;
+    try {
+      const files = fs.readdirSync(LOG_DIR);
+      for (const f of files) {
+        if (f.endsWith(".jsonl")) {
+          fileCount++;
+          totalSize += fs.statSync(path.join(LOG_DIR, f)).size;
+        }
+      }
+    } catch {}
+    const sizeMb = (totalSize / 1024 / 1024).toFixed(2);
+    ctx.editMessageText(
+      `Log Storage\n\n` +
+      `Path: \`${LOG_DIR}\`\n` +
+      `Log files: ${fileCount}\n` +
+      `Total size: ${sizeMb} MB\n\n` +
+      `Logs are written as JSONL files (one JSON object per line).\n` +
+      `They persist across restarts via Railway Volume.`,
+      { parse_mode: "Markdown", ...backButton() });
   });
 
   bot.action("back", (ctx) => {
