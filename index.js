@@ -56,6 +56,7 @@ function logToFile(entry) {
   const filepath = path.join(LOG_DIR, filename);
   try {
     fs.appendFileSync(filepath, JSON.stringify(entry) + "\n");
+    log.debug(`Logged #${entry.id} → ${filename}`);
   } catch (err) {
     log.debug(`Failed to write log file: ${err.message}`);
   }
@@ -552,6 +553,7 @@ startBot().catch((err) => {
 
 log.info(`Service: ${RAILWAY_SERVICE_NAME} — Env: ${RAILWAY_ENVIRONMENT_NAME}`);
 log.info(`Public address: ${PROXY_PUBLIC_HOST}:${PROXY_PUBLIC_PORT}`);
+log.info(`Persistent log volume: ${LOG_DIR}`);
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 process.once("SIGINT", async () => {
