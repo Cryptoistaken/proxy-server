@@ -40,11 +40,32 @@ Client ──HTTPS:443──► Railway HTTP Domain ──► index.js (:8080)
 # List available log files
 curl -u ratul:ratul https://ratul.up.railway.app/logs
 
-# View a specific log file (JSONL — one JSON object per line)
+# Tail — last 20 requests (most useful for debugging)
+curl -u ratul:ratul 'https://ratul.up.railway.app/logs?tail=20'
+
+# View a specific log file (all entries, raw JSONL)
 curl -u ratul:ratul https://ratul.up.railway.app/logs/2026-05-23.jsonl
 
-# Pipe through jq for pretty-printed output
+# Filter by status code (e.g. find all errors)
+curl -u ratul:ratul 'https://ratul.up.railway.app/logs/2026-05-23.jsonl?status=403'
+
+# Filter by URL keyword
+curl -u ratul:ratul 'https://ratul.up.railway.app/logs/2026-05-23.jsonl?url=example'
+
+# Filter by method
+curl -u ratul:ratul 'https://ratul.up.railway.app/logs/2026-05-23.jsonl?method=POST'
+
+# Filter by log type (http, tunnel, socks)
+curl -u ratul:ratul 'https://ratul.up.railway.app/logs/2026-05-23.jsonl?type=tunnel'
+
+# Combine filters + tail
+curl -u ratul:ratul 'https://ratul.up.railway.app/logs/2026-05-23.jsonl?status=200&url=httpbin&tail=5'
+
+# Raw JSONL piped through jq
 curl -s -u ratul:ratul https://ratul.up.railway.app/logs/2026-05-23.jsonl | jq .
+
+# Delete all log files
+curl -X DELETE -u ratul:ratul https://ratul.up.railway.app/logs
 ```
 
 > Auth uses the same proxy credentials (`ratul` / `ratul`). Works in any browser too — it'll prompt for username/password.

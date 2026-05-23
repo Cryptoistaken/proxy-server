@@ -277,7 +277,7 @@ const httpServer = http.createServer(async (req, res) => {
     }
 
     // GET /logs or /logs?tail=20 — list files or tail latest entries
-    if (req.url === "/logs" || req.url.startsWith("/logs?") || req.url === "/logs") {
+    if (req.url === "/logs" || req.url.startsWith("/logs?")) {
       const params = new URL(req.url, "http://localhost").searchParams;
       const tail = parseInt(params.get("tail"), 10);
 
